@@ -3,20 +3,23 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-const app = express();
+const authRoutes = require('./routes/authRoutes');
+const waterRoutes = require('./routes/waterRoutes');
 
-// Middleware (Veri alışverişi için gerekli)
+const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Test Rotası (Tarayıcıdan kontrol etmek için)
-app.get('/', (req, res) => {
-    res.send('Water Intake API is running! 💧🚀');
-});
+// MongoDB Bağlantısı
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('✅ MongoDB Connected'))
+    .catch(err => console.error('❌ DB Connection Error:', err));
 
-// Port Ayarı
+// API Rotaları - STANDARTLAŞTIRILDI
+app.use('/api/auth', authRoutes);   // Kayıt, Giriş, Profil Güncelleme burada
+app.use('/api/water', waterRoutes); // Su ekleme, Geçmiş, Reset burada
+
 const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-    console.log(`Server currently running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server is UP on port ${PORT}`);
 });

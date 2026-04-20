@@ -1,106 +1,234 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import confetti from 'canvas-confetti';
 import { translations } from './translations';
 
+// Bileşenler
+import WeeklyChart from './components/WeeklyChart';
+import Auth from './pages/Auth';
+import Onboarding from './pages/Onboarding';
+import CalendarModal from './components/CalendarModal';
+import SettingsModal from './components/SettingsModal';
+import NotificationSettings from './components/NotificationSettings';
+// Diğer importların hemen altına ekle:
+import LanguageDropdown from './components/LanguageDropdown';
+const API_BASE_URL = 'http://192.168.0.104:5000/api';
 function App() {
+  const [user, setUser] = useState(null);
   const [ml, setMl] = useState(0);
-  const [lang, setLang] = useState('en'); // Başlangıç dili İngilizce
-  const goal = 2500; // Günlük hedef 2.5 Litre
+  const [lang, setLang] = useState('en');
+  const [goal, setGoal] = useState(2000);
+  const [history, setHistory] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [darkMode, setDarkMode] = useState(false);
 
-  // Seçili dile göre çevirileri getir
+  // Modallar
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
   const t = translations[lang];
 
-  // Su ekleme ve Backend'e gönderme fonksiyonu
+  // Karanlık Mod
+  useEffect(() => {
+    if (darkMode) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
+  }, [darkMode]);
+
+  // 🔔 BİLDİRİM MOTORU (Geliştirilmiş)
+  useEffect(() => {
+    let intervalId;
+    if (user?.notificationsEnabled) {
+      if (Notification.permission !== "granted") {
+        Notification.requestPermission();
+      }
+
+      intervalId = setInterval(() => {
+        if (Notification.permission === "granted") {
+          new Notification(t.notifTitle, {
+            body: t.notifBody,
+            icon: "https://cdn-icons-png.flaticon.com/512/3105/3105807.png"
+          });
+        }
+      }, user.notificationInterval * 60 * 60 * 1000);
+    }
+    return () => clearInterval(intervalId);
+  }, [user?.notificationsEnabled, user?.notificationInterval, lang, t.notifTitle, t.notifBody]);
+
+  // 🌍 YARDIMCI FONKSİYON: Tarihi yerel formatta (YYYY-MM-DD) verir
+  const getLocalDateString = (date) => {
+    return new Date(date).toLocaleDateString('sv-SE');
+  };
+
+  // Veri Çekme (Bug Fix: Bugünün verisini yerel tarihe göre süzer)
+  const fetchHistory = async () => {
+    if (!user) return;
+    try {
+      const res = await axios.get(`${API_BASE_URL}/water/history/${user.userId}`);
+      setHistory(res.data);
+
+      // BUG FIX: ISO yerine Local Date kullanıyoruz
+      const todayStr = getLocalDateString(new Date());
+
+      const totalToday = res.data
+        .filter(log => getLocalDateString(log.date) === todayStr)
+        .reduce((sum, log) => sum + log.amount, 0);
+
+      setMl(totalToday);
+    } catch (err) { console.error("Fetch error:", err); }
+  };
+
+  // Su Ekleme
   const addWater = async (amount) => {
-    setMl(prev => prev + amount);
+    const newAmount = ml + amount;
+    setMl(newAmount);
+
+    if (newAmount >= goal && ml < goal) {
+      confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+    }
 
     try {
-      // NOT: 192.168.x.x kısmını kendi bilgisayarının IPv4 adresiyle güncel tut!
-      await axios.post('http://192.168.0.104:5000/api/add-water', {
-        amount: amount,
-        userId: 'emir_40795'
-      });
-      console.log("Data synced with MongoDB! 🚀");
-    } catch (err) {
-      console.error("Database connection error:", err);
-    }
+      // Not: Backend genellikle tarihi kendi atar, 
+      // ama fetchHistory yerel tarihe göre hesaplayacağı için sorun kalmaz.
+      await axios.post(`${API_BASE_URL}/water/add`, { userId: user.userId, amount });
+      fetchHistory();
+    } catch (err) { console.error(err); }
   };
+
+  // Profil & Bildirim Güncelleme
+  const handleProfileUpdate = async (updatedData) => {
+    try {
+      let finalGoal = updatedData.dailyGoal;
+      if (!finalGoal || finalGoal == 0) {
+        finalGoal = updatedData.weight ? Math.round(updatedData.weight * 35) : 2000;
+      }
+
+      const res = await axios.post(`${API_BASE_URL}/auth/update-profile`, {
+        userId: user.userId,
+        ...updatedData,
+        dailyGoal: finalGoal
+      });
+
+      setGoal(res.data.dailyGoal);
+      setUser({ ...user, ...res.data });
+
+      // Modalları kapatma mantığı
+      if (isSettingsOpen && !updatedData.notificationsEnabled && !updatedData.notificationInterval) {
+        setIsSettingsOpen(false);
+      }
+      if (isNotifOpen && (updatedData.notificationsEnabled !== undefined)) {
+        setIsNotifOpen(false);
+      }
+
+    } catch (err) { console.error("Update error:", err); }
+  };
+
+  // ⚡ SIFIRLAMA MANTIĞI (BUG FIX)
+  const handleReset = async () => {
+    if (!window.confirm(t.confirmReset)) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/water/reset/${user.userId}`);
+      setMl(0);
+      fetchHistory();
+    } catch (err) { console.error(err); }
+  };
+
+  // Auth / Onboarding Kontrolleri
+  if (!user) return <Auth API_BASE_URL={API_BASE_URL} onLogin={(d) => { setUser(d); if (!d.weight) setShowOnboarding(true); }} t={t} />;
+  if (showOnboarding) return <Onboarding userId={user.userId} API_BASE_URL={API_BASE_URL} onComplete={(g) => { setGoal(g); setShowOnboarding(false); }} />;
 
   const percentage = Math.min((ml / goal) * 100, 100);
 
   return (
-    <div className="min-h-screen bg-[#f0f9ff] flex flex-col items-center justify-center p-6 font-sans relative">
+    <div className="min-h-screen bg-[#f0f9ff] dark:bg-slate-900 transition-colors duration-500 pt-28 pb-12 px-6 relative overflow-x-hidden text-slate-900 dark:text-white">
 
-      {/* SAĞ ÜST KÖŞE: Dil Seçimi (Bayrak Resimleri ile) */}
-      <div className="absolute top-6 right-6 flex gap-3 bg-white/70 p-2.5 rounded-2xl backdrop-blur-md shadow-lg border border-white/50">
-        <button onClick={() => setLang('tr')} className="hover:scale-125 transition-all cursor-pointer">
-          <img src="https://flagcdn.com/w40/tr.png" alt="TR" className="w-7 h-5 rounded shadow-sm" />
+      {/* NAVBAR */}
+      <div className="fixed top-0 left-0 right-0 h-24 bg-white/60 dark:bg-slate-800/60 backdrop-blur-lg z-[100] flex items-center px-8 justify-between border-b border-blue-50 dark:border-slate-700">
+
+        {/* SOL: Tema Toggle */}
+        <button onClick={() => setDarkMode(!darkMode)} className="bg-white dark:bg-slate-700 p-3 rounded-2xl shadow-sm text-2xl hover:scale-110 transition-transform">
+          {darkMode ? '☀️' : '🌙'}
         </button>
-        <button onClick={() => setLang('en')} className="hover:scale-125 transition-all cursor-pointer">
-          <img src="https://flagcdn.com/w40/gb.png" alt="EN" className="w-7 h-5 rounded shadow-sm" />
-        </button>
-        <button onClick={() => setLang('pl')} className="hover:scale-125 transition-all cursor-pointer">
-          <img src="https://flagcdn.com/w40/pl.png" alt="PL" className="w-7 h-5 rounded shadow-sm" />
-        </button>
+
+        {/* SAĞ: Aksiyon Butonları */}
+        <div className="flex gap-3 items-center">
+          {/* Yeni Dil Dropdown */}
+          <LanguageDropdown currentLang={lang} onLangChange={setLang} />
+
+          {/* Bildirim Butonu */}
+          <div className="relative">
+            <button
+              onClick={(e) => { e.stopPropagation(); setIsNotifOpen(!isNotifOpen); }}
+              className={`p-3 rounded-2xl shadow-sm text-2xl relative transition-all ${isNotifOpen ? 'bg-sky-100 dark:bg-sky-900 ring-2 ring-sky-500' : 'bg-white dark:bg-slate-700'}`}
+            >
+              🔔 {user?.notificationsEnabled && <span className="absolute top-2 right-2 w-3 h-3 bg-green-500 rounded-full border-2 border-white dark:border-slate-800 animate-pulse"></span>}
+            </button>
+
+            <NotificationSettings
+              user={user}
+              isOpen={isNotifOpen}
+              onClose={() => setIsNotifOpen(false)}
+              onUpdate={handleProfileUpdate}
+              t={t}
+            />
+          </div>
+
+          <button onClick={() => setIsCalendarOpen(true)} className="bg-white dark:bg-slate-700 p-3 rounded-2xl shadow-sm text-2xl">📅</button>
+          <button onClick={() => setIsSettingsOpen(true)} className="bg-white dark:bg-slate-700 p-3 rounded-2xl shadow-sm text-2xl">⚙️</button>
+        </div>
       </div>
 
-      {/* BAŞLIK VE ALT BAŞLIK */}
-      <h1 className="text-4xl font-black text-[#0369a1] mb-2 tracking-tight">{t.title}</h1>
-      <p className="text-[#38bdf8] mb-10 font-bold uppercase text-xs tracking-[0.2em]">{t.subtitle}</p>
+      {/* ANA İÇERİK */}
+      <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-10 items-start">
+        <div className="lg:col-span-2 flex flex-col items-center">
+          <h1 className="text-3xl font-black text-[#0369a1] dark:text-sky-400 mb-1">{t.title}</h1>
+          <p className="text-[#38bdf8] dark:text-sky-300 mb-10 font-bold uppercase text-[10px] tracking-[0.4em]">Developed by Emir Karatekin</p>
 
-      {/* ANA GÖSTERGE: Su Halkası */}
-      <div className="relative w-72 h-72 flex items-center justify-center bg-white rounded-full shadow-[0_25px_60px_rgba(8,_112,_184,_0.15)] border-[14px] border-white overflow-hidden">
-        <div className="z-10 text-center">
-          <span className="text-6xl font-black text-[#0284c7] drop-shadow-sm">{ml}</span>
-          <span className="text-[#7dd3fc] block font-extrabold mt-1 text-lg">/ {goal} ml</span>
+          <div className="relative w-64 h-64 flex items-center justify-center bg-white dark:bg-slate-800 rounded-full shadow-2xl border-[12px] border-white dark:border-slate-700 overflow-hidden mb-10 transition-all hover:shadow-sky-200 dark:hover:shadow-sky-900/20">
+            <div className="z-10 text-center">
+              <span className="text-5xl font-black text-[#0284c7] dark:text-sky-400">{ml}</span>
+              <span className="text-[#7dd3fc] dark:text-sky-200/50 block font-extrabold text-xs">/ {goal} ml</span>
+            </div>
+            <div className="absolute bottom-0 w-full bg-[#0ea5e9] dark:bg-sky-500 transition-all duration-1000 ease-out opacity-30" style={{ height: `${percentage}%` }}></div>
+          </div>
+
+          <div className="flex gap-6 mb-12">
+            {[250, 500].map(amt => (
+              <button key={amt} onClick={() => addWater(amt)} className="bg-[#0284c7] dark:bg-sky-600 text-white w-24 h-24 rounded-[2rem] shadow-xl flex flex-col items-center justify-center active:scale-95 transition-all border-b-4 border-blue-900 dark:border-sky-900">
+                <span className="text-3xl mb-1">{amt === 250 ? '💧' : '🌊'}</span>
+                <span className="font-black text-[9px] uppercase tracking-wider">{amt === 250 ? t.cup : t.bottle}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Mavi Su Doluluk Efekti */}
-        <div
-          className="absolute bottom-0 w-full bg-[#0ea5e9] transition-all duration-1000 ease-in-out opacity-25"
-          style={{ height: `${percentage}%` }}
-        ></div>
+        <div className="lg:col-span-1 w-full animate-in slide-in-from-right duration-700">
+          <WeeklyChart history={history} t={t} lang={lang} />
+        </div>
       </div>
 
-      {/* DURUM ÇUBUĞU */}
-      <div className="mt-12 bg-white/80 backdrop-blur-sm px-8 py-4 rounded-3xl shadow-sm border border-blue-50">
-        <p className="text-[#0369a1] font-bold text-lg">
-          {percentage >= 100 ? t.reached : `%${Math.round(percentage)} ${t.completed}`}
-        </p>
-      </div>
+      {/* Modallar */}
+      <CalendarModal
+        isOpen={isCalendarOpen}
+        onClose={() => setIsCalendarOpen(false)}
+        history={history}
+        selectedDate={selectedDate}
+        setSelectedDate={setSelectedDate}
+        darkMode={darkMode}
+        t={t}       // 🌍 Dil nesnesi
+        lang={lang} // 🌍 Dil kodu (tr/en/pl)
+      />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} user={user} onUpdate={handleProfileUpdate} onLogout={() => setUser(null)} t={t} />
 
-      {/* BUTONLAR: Bardak ve Şişe */}
-      <div className="flex gap-8 mt-12">
+      <div className="w-full flex justify-center mt-16 pb-10">
         <button
-          onClick={() => addWater(250)}
-          className="bg-[#0284c7] hover:bg-[#0369a1] text-white w-28 h-28 rounded-[2.5rem] shadow-2xl shadow-blue-200 flex flex-col items-center justify-center active:scale-90 transition-all border-b-4 border-blue-900"
+          onClick={handleReset}
+          className="bg-red-600 hover:bg-red-700 text-white font-black py-4 px-10 rounded-2xl shadow-xl shadow-red-200 dark:shadow-none transition-all active:scale-95 uppercase tracking-[0.3em] text-xs flex items-center gap-2"
         >
-          <span className="text-4xl mb-1">💧</span>
-          <span className="font-black text-xs uppercase tracking-wider">{t.cup}</span>
-          <span className="text-[10px] font-bold bg-white/20 px-2.5 py-0.5 rounded-full mt-2">250ml</span>
-        </button>
-
-        <button
-          onClick={() => addWater(500)}
-          className="bg-[#0ea5e9] hover:bg-[#0284c7] text-white w-28 h-28 rounded-[2.5rem] shadow-2xl shadow-blue-200 flex flex-col items-center justify-center active:scale-90 transition-all border-b-4 border-blue-700"
-        >
-          <div className="flex mb-1">
-            <span className="text-3xl">💧</span>
-            <span className="text-2xl -ml-2 mt-2">💧</span>
-          </div>
-          <span className="font-black text-xs uppercase tracking-wider">{t.bottle}</span>
-          <span className="text-[10px] font-bold bg-white/20 px-2.5 py-0.5 rounded-full mt-2">500ml</span>
+          <span></span> {t.reset}
         </button>
       </div>
-
-      {/* SIFIRLA BUTONU */}
-      <button
-        onClick={() => setMl(0)}
-        className="mt-14 text-[#bae6fd] hover:text-[#0284c7] transition-all text-[11px] font-black tracking-[0.3em] uppercase"
-      >
-        {t.reset}
-      </button>
-
     </div>
   );
 }
