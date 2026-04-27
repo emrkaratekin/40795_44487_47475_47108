@@ -12,7 +12,7 @@ import SettingsModal from './components/SettingsModal';
 import NotificationSettings from './components/NotificationSettings';
 // Diğer importların hemen altına ekle:
 import LanguageDropdown from './components/LanguageDropdown';
-const API_BASE_URL = 'http://192.168.0.104:5000/api';
+const API_BASE_URL = 'http://localhost:5000/api';
 function App() {
   const [user, setUser] = useState(null);
   const [ml, setMl] = useState(0);
